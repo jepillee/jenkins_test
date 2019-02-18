@@ -1,0 +1,155 @@
+#### master
+Step 1: Disable SELinux & setup firewall rules
+
+hostnamectl set-hostname 'k8s-master' 
+
+exec bash 
+setenforce 0 
+sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux
+
+cat <<EOF >  /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+
+swapoff -a && sed -i '/swap/s/^/#/' /etc/fstab
+
+
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=6443/tcp 
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=2379-2380/tcp 
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=10250/tcp 
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=10251/tcp 
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=10252/tcp 
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=10255/tcp 
+[root@k8s-master ~]# firewall-cmd --reload 
+[root@k8s-master ~]# modprobe br_netfilter 
+[root@k8s-master ~]# echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+[root@k8s-master ~]# firewall-cmd --list-all
+
+
+
+## /etc/hosts
+192.168.56.101 k8s-master 
+192.168.56.102 worker-node1 
+192.168.56.103 worker-node2
+
+Step 2: Configure Kubernetes Repository
+
+[root@k8s-master ~]# cat <<EOF > /etc/yum.repos.d/kubernetes.repo 
+[kubernetes] 
+name=Kubernetes 
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64 
+enabled=1 
+gpgcheck=1 
+repo_gpgcheck=1 
+gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg 
+        https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg 
+EOF 
+[root@k8s-master ~]#
+
+
+
+Step 3: Install Kubeadm and Docker
+
+[root@k8s-master ~]# yum install kubeadm docker -y
+
+
+[root@k8s-master ~]# systemctl restart docker && systemctl enable docker 
+[root@k8s-master ~]# systemctl  restart kubelet && systemctl enable kubelet
+
+Step 4: Initialize Kubernetes Master with ‘kubeadm init’
+
+[root@k8s-master ~]# kubeadm init --apiserver-advertise-address=192.168.56.101 --pod-network-cidr=10.244.0.0/16
+
+* VM의 CPU는 2 이상으로 설정하지 않으면 에러 발생
+
+[root@k8s-master ~]# mkdir -p $HOME/.kube
+[root@k8s-master ~]# cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+[root@k8s-master ~]# chown $(id -u):$(id -g) $HOME/.kube/config
+
+* init 실행시 출력된 kubeadm join 명령어를 copy  해둔다.
+
+* init 실패로 다시 설치 할 경우
+kubeadm reset
+systemctl restart kubelet
+iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
+
+ 
+ 
+export KUBECONFIG=/etc/kubernetes/admin.conf 
+  
+Step 5: Deploy pod network to the cluster
+
+[root@k8s-master ~]# export kubever=$(kubectl version | base64 | tr -d '\n') 
+[root@k8s-master ~]# kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$kubever"
+
+* 설치 확인
+[root@k8s-master ~]# kubectl get nodes
+NAME           STATUS   ROLES    AGE   VERSION
+k8s-master     Ready    master   28m   v1.13.3
+
+
+### worker node
+Step 1: Disable SELinux & configure firewall rules on both the nodes
+
+hostnamectl set-hostname 'worker-node1' 
+hostnamectl set-hostname 'worker-node2' 
+
+exec bash 
+setenforce 0 
+sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux
+
+cat <<EOF >  /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+
+swapoff -a && sed -i '/swap/s/^/#/' /etc/fstab
+
+[root@k8s-master ~]# sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=10250/tcp 
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=10255/tcp 
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=30000-32767/tcp 
+[root@k8s-master ~]# firewall-cmd --permanent --add-port=6783/tcp 
+[root@k8s-master ~]# firewall-cmd --reload 
+[root@k8s-master ~]# modprobe br_netfilter 
+[root@k8s-master ~]# echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+[root@k8s-master ~]# firewall-cmd --list-all
+
+Step 2: Configure Kubernetes Repositories on both worker nodes
+
+[root@k8s-master ~]# cat <<EOF > /etc/yum.repos.d/kubernetes.repo 
+[kubernetes] 
+name=Kubernetes 
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64 
+enabled=1 
+gpgcheck=1 
+repo_gpgcheck=1 
+gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg 
+        https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg 
+EOF 
+[root@k8s-master ~]#
+
+Step 3: Install kubeadm and docker package on both nodes
+
+[root@worker-node1 ~]# yum  install kubeadm docker -y 
+[root@worker-node2 ~]# yum  install kubeadm docker -y
+
+[root@worker-node1 ~]# systemctl restart docker && systemctl enable docker 
+[root@worker-node2 ~]# systemctl restart docker && systemctl enable docker
+
+
+Step 4: Now Join worker nodes to master node
+
+* master 서버 init 할때 출력한 kubeadm join 명령어를 넣어 준다.
+
+kubeadm join 192.168.56.101:6443 --token 4aneih.gjv5oamm2ofpfar4 --discovery-token-ca-cert-hash sha256:8538910f911a89438300ddc08c2cd3da1b05edfffbd57e2d186f119fbdd1651f
+
+* master 서버에서 설치 확인
+[root@k8s-master ~]# kubectl get nodes
+NAME           STATUS   ROLES    AGE   VERSION
+k8s-master     Ready    master   28m   v1.13.3
+worker-node1   Ready    <none>   22m   v1.13.3
+worker-node2   Ready    <none>   22m   v1.13.3
